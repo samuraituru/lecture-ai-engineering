@@ -11,6 +11,7 @@ import pickle
 import time
 import great_expectations as gx
 
+
 class DataLoader:
     """データロードを行うクラス"""
 
@@ -61,14 +62,16 @@ class DataValidator:
 
         # Great Expectationsを使用したバリデーション
         try:
+            # 新しいAPIを使用
             context = gx.get_context()
-            data_source = context.data_sources.add_pandas("pandas")
-            data_asset = data_source.add_dataframe_asset(name="pd dataframe asset")
 
-            batch_definition = data_asset.add_batch_definition_whole_dataframe(
-                "batch definition"
+            # バッチを作成（新しい方法）
+            datasource = context.sources.add_or_update_pandas(
+                name="my_pandas_datasource"
             )
-            batch = batch_definition.get_batch(batch_parameters={"dataframe": data})
+            asset = datasource.add_dataframe_asset(name="titanic_data_asset")
+            batch_request = asset.build_batch_request(dataframe=data)
+            validator = context.get_validator(batch_request=batch_request)
 
             results = []
 
@@ -89,31 +92,31 @@ class DataValidator:
                 print(f"警告: 以下のカラムがありません: {missing_columns}")
                 return False, [{"success": False, "missing_columns": missing_columns}]
 
-            expectations = [
-                gx.expectations.ExpectColumnDistinctValuesToBeInSet(
-                    column="Pclass", value_set=[1, 2, 3]
-                ),
-                gx.expectations.ExpectColumnDistinctValuesToBeInSet(
-                    column="Sex", value_set=["male", "female"]
-                ),
-                gx.expectations.ExpectColumnValuesToBeBetween(
-                    column="Age", min_value=0, max_value=100
-                ),
-                gx.expectations.ExpectColumnValuesToBeBetween(
-                    column="Fare", min_value=0, max_value=600
-                ),
-                gx.expectations.ExpectColumnDistinctValuesToBeInSet(
-                    column="Embarked", value_set=["C", "Q", "S", ""]
-                ),
-            ]
+            # 新しい形式でexpectationを作成して実行
+            validator.expect_column_values_to_be_in_set(
+                column="Pclass", value_set=[1, 2, 3]
+            )
+            validator.expect_column_values_to_be_in_set(
+                column="Sex", value_set=["male", "female"]
+            )
+            validator.expect_column_values_to_be_between(
+                column="Age", min_value=0, max_value=100
+            )
+            validator.expect_column_values_to_be_between(
+                column="Fare", min_value=0, max_value=600
+            )
+            validator.expect_column_values_to_be_in_set(
+                column="Embarked", value_set=["C", "Q", "S", ""]
+            )
 
-            for expectation in expectations:
-                result = batch.validate(expectation)
-                results.append(result)
+            # 検証を実行してチェックポイントを作成
+            checkpoint_result = validator.validate()
 
-            # すべての検証が成功したかチェック
-            is_successful = all(result.success for result in results)
-            return is_successful, results
+            # 結果を取得
+            is_successful = checkpoint_result.success
+
+            # 結果をリストとして返す (新しい形式に合わせる)
+            return is_successful, [checkpoint_result]
 
         except Exception as e:
             print(f"Great Expectations検証エラー: {e}")
@@ -256,10 +259,20 @@ if __name__ == "__main__":
     # データバリデーション
     success, results = DataValidator.validate_titanic_data(X)
     print(f"データ検証結果: {'成功' if success else '失敗'}")
+
+    # 修正: 結果の表示方法を変更
     for result in results:
-        # "success": falseの場合はエラーメッセージを表示
-        if not result["success"]:
-            print(f"異常タイプ: {result['expectation_config']['type']}, 結果: {result}")
+        # 新しいAPIの結果形式に対応
+        if isinstance(result, dict) and not result.get("success", True):
+            print(f"検証エラー: {result}")
+        elif hasattr(result, "success") and not result.success:
+            # 失敗した期待値がある場合に詳細を表示
+            for res in result.results:
+                if not res.success:
+                    print(
+                        f"異常タイプ: {res.expectation_config.expectation_type}, 結果: {res.success}"
+                    )
+
     if not success:
         print("データ検証に失敗しました。処理を終了します。")
         exit(1)
