@@ -4,38 +4,96 @@ on:
   # push:
   #   branches: [ main, master  ]
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
-    
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.10'
-        
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install pytest great_expectations pandas scikit-learn flake8 black mypy pytest-cov
-        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-        
-    - name: Lint with flake8
-      run: |
-        flake8 day5/演習3 --count --select=E9,F63,F7,F82 --show-source --statistics
-        flake8 day5/演習3 --count --exit-zero --max-complexity=10 --max-line-length=88 --statistics
-        
-    - name: Format check with black
-      run: |
-        black --check day5/演習3
-        
-    - name: Run data tests
-      run: |
-        pytest day5/演習3/tests/test_data.py -v
-        
-    - name: Run model tests
-      run: |
-        pytest day5/演習3/tests/test_model.py -v
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest great_expectations pandas scikit-learn flake8 black mypy pytest-cov
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Lint with flake8
+        run: |
+          flake8 day5/演習3 --count --select=E9,F63,F7,F82 --show-source --statistics
+          flake8 day5/演習3 --count --exit-zero --max-complexity=10 --max-line-length=88 --statistics
+
+      - name: Format check with black
+        run: |
+          black --check day5/演習3
+
+      - name: Run data tests
+        run: |
+          pytest day5/演習3/tests/test_data.py -v
+
+      - name: Run model tests
+        run: |
+          pytest day5/演習3/tests/test_model.py -v
+
+      - name: Download baseline metrics
+        uses: actions/download-artifact@v3
+        with:
+          name: model-baseline-metrics
+          path: ./baseline
+        continue-on-error: true # ベースラインが存在しない場合もエラーにしない
+
+      - name: Test performance against baseline
+        id: performance_test
+        run: |
+          mkdir -p ./current_metrics
+
+          # 現在のモデルの評価指標を計算して保存
+          python day5/演習3/scripts/evaluate_model.py --output-file ./current_metrics/metrics.json
+
+          # ベースラインと比較するスクリプトを実行
+          python day5/演習3/scripts/compare_with_baseline.py \
+            --current ./current_metrics/metrics.json \
+            --baseline ./baseline/metrics.json \
+            --output ./comparison_result.txt
+            
+          # 結果を出力
+          cat ./comparison_result.txt
+
+          # 比較結果に基づいて処理を分岐
+          if [ -f ./comparison_result.json ]; then
+            if grep -q "FAIL" ./comparison_result.txt; then
+              echo "performance_degraded=true" >> $GITHUB_OUTPUT
+              echo "::warning::モデルの性能が劣化しています。詳細は比較結果を確認してください。"
+            else
+              echo "performance_degraded=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            # ベースラインが存在しない場合は現在の結果をベースラインとして扱う
+            echo "::notice::ベースラインが見つかりません。現在の結果を新しいベースラインとして設定します。"
+            cp ./current_metrics/metrics.json ./baseline/metrics.json
+            echo "performance_degraded=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload current metrics as baseline
+        if: success() && steps.performance_test.outputs.performance_degraded != 'true'
+        uses: actions/upload-artifact@v3
+        with:
+          name: model-baseline-metrics
+          path: ./current_metrics/metrics.json
+
+      - name: Upload comparison results
+        uses: actions/upload-artifact@v3
+        with:
+          name: performance-comparison
+          path: ./comparison_result.txt
+
+      - name: Fail workflow if performance degraded
+        if: steps.performance_test.outputs.performance_degraded == 'true'
+        run: |
+          echo "モデルの性能が劣化しています。PR前に性能改善を行ってください。"
+          exit 1
